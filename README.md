@@ -8,3 +8,4 @@ python3 gourmet2pdf.py
 * Reportlab library for creating PDF files 
 * BeautifulSoup library for parsing XML files
 * lxml installed in the system as parser for BeautifulSoup
+* Font Awesome for rating symbols under the Font Awesome Free License

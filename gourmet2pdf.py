@@ -1,3 +1,4 @@
+#! /usr/bin/env python3
 
 """
 gourmet2pdf
@@ -8,6 +9,7 @@ gourmet2pdf
 
 import io
 import base64
+import argparse
 
 from bs4 import BeautifulSoup, CData
 from reportlab.pdfgen import canvas
@@ -134,13 +136,16 @@ def create_pdf_doc(input_file, output_file):
 
 
 def parse_xml_file(input_file):
-    with open(input_file, 'rb') as recipe_file:
+    with open(input_file, 'r') as recipe_file:
         soup = BeautifulSoup(recipe_file.read(), 'lxml-xml')
     for recipe in soup.find_all('recipe'):
         yield recipe
 
 
 if __name__ == '__main__':
-    output_file = '/home/christian/Desktop/gourmet2pdf/Rezepte.grmt.pdf'
-    input_file = '/home/christian/Desktop/gourmet2pdf/Rezepte.grmt'
-    create_pdf_doc(input_file, output_file)
+    parser = argparse.ArgumentParser(description='Creates a recipe book as PDF file for given Gourmet recipes.')
+    parser.add_argument('input_file', help='Gourmet recipe file')
+    parser.add_argument('output_file', help='PDF file to be created', nargs='?', default='')
+    args = parser.parse_args()
+    create_pdf_doc(args.input_file, args.output_file if args.output_file else args.input_file+'.pdf')
+

@@ -12,17 +12,16 @@ import base64
 import argparse
 
 from bs4 import BeautifulSoup, CData
-from reportlab.pdfgen import canvas
 from reportlab.lib import colors
 from reportlab.lib.units import cm, mm
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
-from reportlab.platypus.doctemplate import PageTemplate, BaseDocTemplate
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, PageBreak, Table, TableStyle
-from reportlab.platypus.flowables import KeepTogether, BalancedColumns
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-
+from reportlab.pdfgen import canvas
+from reportlab.platypus.doctemplate import BaseDocTemplate, PageTemplate
+from reportlab.platypus import Image, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus.flowables import BalancedColumns, KeepTogether
 
 PAGE_WIDTH, PAGE_HEIGHT = A4
 BORDER_HORIZONTAL = 2.0*cm
@@ -76,6 +75,19 @@ def create_later_pages(canvas, doc):
     canvas.restoreState()
 
 
+def add_ingredients_for_group(enclosing_tag):
+    ingredients_heading_style = ParagraphStyle(name='Normal', fontName='Helvetica', fontSize=10, leading=10, leftIndent=8)
+    ingredients_style = ParagraphStyle(name='Normal', fontName='Times-Roman', fontSize=10, leading=10, leftIndent=8)
+    p = []
+    if enclosing_tag.groupname:
+        p.append(Paragraph(enclosing_tag.groupname.text, ingredients_heading_style))
+    for i in enclosing_tag.find_all('ingredient'):
+        p.append(Paragraph('{} {} {}'.format(i.amount if i.amount else '',
+                                             i.unit if i.unit else '',
+                                             i.item if i.item else ''), ingredients_style))
+    return p
+
+
 def create_pdf_doc(input_file, output_file):
     pdfmetrics.registerFont(TTFont('FontAwesome', 'font_awesome.ttf'))
     heading_style = ParagraphStyle(name='Normal', fontName='Helvetica',
@@ -92,6 +104,7 @@ def create_pdf_doc(input_file, output_file):
         substory = []
         recipe_heading = Heading('{}'.format(recipe.title.string), heading_style)
         substory.append(recipe_heading)
+
         # build block with information about the recipe
         topline = []
         if recipe.source: topline.append('Quelle: {}'.format(recipe.source.string))
@@ -99,23 +112,45 @@ def create_pdf_doc(input_file, output_file):
         if recipe.rating: topline.append('Bewertung: {}'.format(starify_rating(recipe.rating.string)))
         if recipe.category: topline.append('Kategorie: {}'.format(recipe.category.string))
         substory.append(Paragraph('<br/>'.join(topline), small_style))
-        # build two columns with ingredients and image
-        p = [ Paragraph('{} {} {}'.format(i.amount if i.amount else '',
-                                          i.unit if i.unit else '',
-                                          i.item if i.item else ''), paragraph_style)
-              for i in recipe.find_all('ingredient') ]
+
+        # extract image if it exists
         if recipe.image:
             im = Image(io.BytesIO(base64.b64decode(recipe.image.string)))
             im._restrictSize(7*cm, 7*cm)
             im.hAlign = 'RIGHT'
         else:
             im = Paragraph('', paragraph_style)
+
+        # extract all ingredient groups with their ingredients
+        ingredient_groups = []
+        # TODO: Search only in <ingredient-list> tag.
+        igroup_tags = recipe.find_all('inggroup')
+        if igroup_tags:
+            for igroup in igroup_tags:
+                ingredient_groups.append(add_ingredients_for_group(igroup))
+        else:
+            ingredient_groups.append(add_ingredients_for_group(recipe))
+        
+        # build two columns for ingredients and image (covering multiple rows!)
         substory.append(Paragraph('Zutaten', subheading_style))
-        data = [ [ p, im ] ]
+        try:
+            data = [ [ ingredient_groups[0][0], im ] ]
+        except:
+            data = [ [ Paragraph('Keine Zutaten für dieses Rezept gegeben!', paragraph_style), im ] ]
+        # add remaining ingredients for first ingredients group
+        for i in ingredient_groups[0][1:]:
+            data.append( [i] )
+        # add ingredients for all remaining ingredient groups to document
+        for g in ingredient_groups[1:]:
+            data.append( [Spacer(1,2*mm)])
+            for i in g:
+                data.append( [i] )
+        # build table from list of elements
         table = Table(data, splitByRow=True)
-        table.setStyle(TableStyle([('VALIGN',(0,0),(-1,-1),'TOP'),
-                                   ('ALIGN',(0,0),(0,0),'LEFT'),
-                                   ('ALIGN',(-1,0),(-1,0),'RIGHT')]))
+        table.setStyle(TableStyle([('VALIGN',(0, 0),  (-1, -1), 'TOP'),
+                                   ('ALIGN', (0, 0),  (0, 0),   'LEFT'),
+                                   ('SPAN',  (1, 0),  (1, min(10, len(ingredient_groups[0])-1))),
+                                   ('ALIGN', (-1, 0), (-1, 0),  'RIGHT')]))
         substory.append(table)
         # build text blocks for instructions and notes
         if recipe.instructions:
@@ -148,4 +183,3 @@ if __name__ == '__main__':
     parser.add_argument('output_file', help='PDF file to be created', nargs='?', default='')
     args = parser.parse_args()
     create_pdf_doc(args.input_file, args.output_file if args.output_file else args.input_file+'.pdf')
-

@@ -109,3 +109,4 @@ venv.bak/
 *.ttf
 *.zip
 *.otf
+*.json

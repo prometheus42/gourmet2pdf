@@ -7,9 +7,13 @@ gourmet2pdf
 """
 
 
+import re
 import io
+import json
 import base64
+import string
 import argparse
+from pathlib import Path
 
 from bs4 import BeautifulSoup, CData
 from reportlab.lib import colors
@@ -149,7 +153,7 @@ def create_pdf_doc(input_file, output_file):
         table = Table(data, splitByRow=True)
         table.setStyle(TableStyle([('VALIGN',(0, 0),  (-1, -1), 'TOP'),
                                    ('ALIGN', (0, 0),  (0, 0),   'LEFT'),
-                                   ('SPAN',  (1, 0),  (1, min(10, len(ingredient_groups[0])-1))),
+                                           ('SPAN',  (1, 0),  (1, min(10, len(ingredient_groups[0])-1))),
                                    ('ALIGN', (-1, 0), (-1, 0),  'RIGHT')]))
         substory.append(table)
         # build text blocks for instructions and notes
@@ -170,6 +174,109 @@ def create_pdf_doc(input_file, output_file):
     doc.build(story, onFirstPage=create_first_page, onLaterPages=create_later_pages)
 
 
+def parse_time(time_string):
+    """
+    Parses time from the format:
+    * 1 Stunde
+    * 45 Minuten
+    * 1/2 Stunden
+    to the format: PT0H45M
+    """
+    # parse string and capture the to numbers for hours and minutes    
+    regex = r"(?:(?P<hours>\d?\/?\d) Stunden?)? ?(?:(?P<minutes>\d?\/?\d) Minuten?)?"
+    matches = re.finditer(regex, time_string, re.IGNORECASE)
+    for m in matches:
+        if m['hours'] and '/' in m['hours']:
+            h1, h2 = [int(x) for x in m['hours'].split('/')]
+            if m['minutes']:
+                hours = 1
+                minutes = (int(m['minutes']) + int(h1 / h2 * 60)) % 60
+            else:
+                hours = 0
+                minutes = int(h1 / h2 * 60)
+        else:
+            hours = int(m['hours']) if m['hours'] else 0
+            minutes = int(m['minutes']) if m['minutes'] else 0
+        break
+    return 'PT{}H{}M'.format(hours, minutes)
+
+
+def create_json_doc(input_file, output_dir):
+    """
+    Source: https://schema.org/Recipe
+    """
+    base_path = Path(output_dir)
+    if not base_path.is_dir or not base_path.exists:
+        print('Output directory ({}) is not a directory!'.format(output_dir))
+        return
+
+    for recipe in parse_xml_file(input_file):
+        # filter out all characters not suitable for the filesystem
+        valid_chars = "-_.() {0}{1}äöüÄÖÜß".format(string.ascii_letters, string.digits)
+        valid_dirname = "".join(ch for ch in recipe.title.string if ch in valid_chars)
+        recipe_dir = base_path / valid_dirname
+        try:
+            recipe_dir.mkdir()
+        except FileExistsError as e:
+            print('Recipe already converted: {}'.format(recipe.title.string))
+            continue
+
+        recipe_data = {'@context': 'https://schema.org', '@type': 'Recipe'}
+        
+        recipe_data['name'] = recipe.title.string
+        recipe_data['author'] = AUTHOR
+        
+        # TODO: Check how to store the source of the recipe correctly.
+        if recipe.source: recipe_data['publisher'] = {'@type': 'Organization', 'name': recipe.source.string}
+        if recipe.link: recipe_data['url'] = recipe.link.string
+        if recipe.category: recipe_data['recipeCategory'] = recipe.category.string
+
+        if recipe.rating:
+            rate = 0
+            try:
+                rate = float(recipe.rating.string.split('/')[0]) / 5 * 10
+            except ValueError:
+                print('Could not parse recipe rating: ', recipe.rating)
+            except TypeError:
+                print('Could not parse recipe rating: ', recipe.rating)
+            recipe_data['aggregateRating'] = {"@type": "AggregateRating", "ratingCount": 1, "ratingValue": str(rate)}
+        
+        if recipe.preptime: recipe_data['prepTime'] = parse_time(recipe.preptime.string)
+        if recipe.cooktime: recipe_data['cookTime'] = parse_time(recipe.cooktime.string)
+        if recipe.totalTime: recipe_data['performTime'] = parse_time(recipe.totalTime.string)
+        if recipe.yields: recipe_data['recipeYield'] = recipe.yields.string
+
+        #if recipe.image: recipe_data['image'] = 'data:image/jpeg;base64,{}'.format(recipe.image.string)
+        if recipe.image:
+            image_file_name = recipe_dir / 'full.jpg'
+            with open(image_file_name, 'wb') as imagefile:
+                imagefile.write(base64.b64decode(recipe.image.string))
+            recipe_data['image'] = str(image_file_name)
+
+        # TODO: Handle ingredient groups better (for support in Nextcloud see: https://github.com/nextcloud/cookbook/issues/311)
+        ingredients = []
+        igroup_tags = recipe.find_all('inggroup')
+        if igroup_tags:
+            for igroup in igroup_tags:
+                if igroup.groupname:
+                    ingredients.append('## {}'.format(igroup.groupname))
+                for i in igroup.find_all('ingredient'):
+                    ingredients.append('{} {} {}'.format(i.amount.string if i.amount else '', i.unit.string if i.unit else '', i.item.string if i.item else ''))
+        else:
+            for i in recipe.find_all('ingredient'):
+                ingredients.append('{} {} {}'.format(i.amount.string if i.amount else '', i.unit.string if i.unit else '', i.item.string if i.item else ''))
+        recipe_data['recipeIngredient'] = ingredients
+        
+        # build text blocks for instructions and notes
+        if recipe.instructions and recipe.instructions.string:
+            recipe_data['recipeInstructions'] = recipe.instructions.string.split('\n')
+        if recipe.modifications:
+            recipe_data['comment'] = recipe.modifications.string
+
+        with open(recipe_dir / 'recipe.json', 'w') as f:
+            json.dump(recipe_data, f)
+
+
 def parse_xml_file(input_file):
     with open(input_file, 'r') as recipe_file:
         soup = BeautifulSoup(recipe_file.read(), 'lxml-xml')
@@ -178,8 +285,14 @@ def parse_xml_file(input_file):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Creates a recipe book as PDF file for given Gourmet recipes.')
+    parser = argparse.ArgumentParser(description='Converts recipes in the file format of Gourmet Recipe Manager to other formats.')
     parser.add_argument('input_file', help='Gourmet recipe file')
-    parser.add_argument('output_file', help='PDF file to be created', nargs='?', default='')
+    parser.add_argument('output_file', help='Output file or directory', nargs='?', default='')
+    parser.add_argument('-f', '--export_format', help='File format to convert Gourmet recipe database to', nargs=1, default='pdf', choices=['json', 'pdf'])
     args = parser.parse_args()
-    create_pdf_doc(args.input_file, args.output_file if args.output_file else args.input_file+'.pdf')
+    if 'pdf' in args.export_format:
+        create_pdf_doc(args.input_file, args.output_file if args.output_file else args.input_file+'.pdf')
+    elif 'json' in args.export_format:
+        create_json_doc(args.input_file, args.output_file if args.output_file else '.')
+    else:
+        print('Chosen file format not supported.')

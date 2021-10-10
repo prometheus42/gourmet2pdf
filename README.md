@@ -1,8 +1,14 @@
 # gourmet2pdf
-Converts recipes from Gourmet file format to PDF files.
+Converts recipes from Gourmet file format to other file formats, including PDF and JSON.
 
 ## Usage
-python3 gourmet2pdf.py
+To convert a recipe file to PDF file:
+
+    ./gourmet2pdf.py recipes.grmt
+
+To create a JSON file for use in Nextcloud Cookbook use the command:
+
+    ./gourmet2pdf.py recipes.grmt output_dir/ -f json
 
 ## Requirements
 * Reportlab library for creating PDF files 
